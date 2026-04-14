@@ -1,1 +1,3 @@
 handeenv/
+venv/
+__pycache__/
