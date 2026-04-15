@@ -38,6 +38,43 @@ def _draw_task_landmarks(img, hand_landmarks):
     cv2.circle(img, (int(root.x * w), int(root.y * h)), 10, (255, 0, 255), cv2.FILLED)
 
 
+def _distance_pixels(point_a, point_b, frame_width, frame_height):
+    x1, y1 = int(point_a.x * frame_width), int(point_a.y * frame_height)
+    x2, y2 = int(point_b.x * frame_width), int(point_b.y * frame_height)
+    return ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5, (x1, y1), (x2, y2)
+
+
+def _draw_distance_overlay(img, hand_landmarks):
+    h, w, _ = img.shape
+    thumb_tip = hand_landmarks[4]
+    index_tip = hand_landmarks[8]
+
+    distance, thumb_xy, index_xy = _distance_pixels(thumb_tip, index_tip, w, h)
+    cv2.line(img, thumb_xy, index_xy, (0, 255, 255), 3)
+    cv2.circle(img, thumb_xy, 8, (0, 255, 255), cv2.FILLED)
+    cv2.circle(img, index_xy, 8, (0, 255, 255), cv2.FILLED)
+
+    gesture = "Pinch" if distance < 40 else "Open"
+    cv2.putText(
+        img,
+        f"Thumb-Index: {int(distance)} px",
+        (10, 110),
+        cv2.FONT_HERSHEY_PLAIN,
+        2,
+        (0, 255, 255),
+        2,
+    )
+    cv2.putText(
+        img,
+        f"Gesture: {gesture}",
+        (10, 145),
+        cv2.FONT_HERSHEY_PLAIN,
+        2,
+        (0, 255, 255),
+        2,
+    )
+
+
 # Change the video file path to your own file
 video_path = "a.mp4"
 cap = cv2.VideoCapture(video_path)
@@ -77,9 +114,12 @@ while True:
 
     img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
+    detected_hands = 0
+
     if use_legacy_solutions:
         results = hands.process(img_rgb)
         if results.multi_hand_landmarks:
+            detected_hands = len(results.multi_hand_landmarks)
             for hand_lms in results.multi_hand_landmarks:
                 for idx, lm in enumerate(hand_lms.landmark):
                     h, w, _ = img.shape
@@ -88,20 +128,24 @@ while True:
                     if idx == 0:
                         cv2.circle(img, (cx, cy), 10, (255, 0, 255), cv2.FILLED)
                 mp_draw.draw_landmarks(img, hand_lms, mphands.HAND_CONNECTIONS)
+                _draw_distance_overlay(img, hand_lms.landmark)
     else:
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=img_rgb)
         results = hands.detect(mp_image)
         if results.hand_landmarks:
+            detected_hands = len(results.hand_landmarks)
             for hand_landmarks in results.hand_landmarks:
                 for idx, lm in enumerate(hand_landmarks):
                     h, w, _ = img.shape
                     print(idx, int(lm.x * w), int(lm.y * h))
                 _draw_task_landmarks(img, hand_landmarks)
+                _draw_distance_overlay(img, hand_landmarks)
 
     c_time = time.time()
     display_fps = 1 / (c_time - p_time) if c_time != p_time else 0
     p_time = c_time
 
+    cv2.putText(img, f"Hands: {detected_hands}", (10, 40), cv2.FONT_HERSHEY_PLAIN, 2, (255, 255, 255), 2)
     cv2.putText(img, str(int(display_fps)), (10, 70), cv2.FONT_HERSHEY_PLAIN, 3, (255, 0, 255), 3)
     cv2.imshow("Image", img)
     out.write(img)
