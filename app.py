@@ -106,6 +106,7 @@
 import os
 import time
 import urllib.request
+
 import cv2
 import mediapipe as mp
 import numpy as np
@@ -124,26 +125,45 @@ def _download_model_if_needed(model_path: str) -> None:
     urllib.request.urlretrieve(MODEL_URL, model_path)
 
 
+def _draw_task_landmarks(img, hand_landmarks):
+    h, w, _ = img.shape
+    connections = mp.tasks.vision.HandLandmarksConnections.HAND_CONNECTIONS
+
+    for lm in hand_landmarks:
+        cx, cy = int(lm.x * w), int(lm.y * h)
+        cv2.circle(img, (cx, cy), 4, (0, 255, 0), cv2.FILLED)
+
+    for conn in connections:
+        start = hand_landmarks[conn.start]
+        end = hand_landmarks[conn.end]
+        x1, y1 = int(start.x * w), int(start.y * h)
+        x2, y2 = int(end.x * w), int(end.y * h)
+        cv2.line(img, (x1, y1), (x2, y2), (255, 0, 255), 2)
+
+    root = hand_landmarks[0]
+    cv2.circle(img, (int(root.x * w), int(root.y * h)), 10, (255, 0, 255), cv2.FILLED)
+
+
 cap = cv2.VideoCapture(0)
 use_legacy_solutions = hasattr(mp, "solutions") and hasattr(mp.solutions, "hands")
 
 if use_legacy_solutions:
     mphands = mp.solutions.hands
-    hands = mphands.Hands(False)
+    hands = mphands.Hands(False, max_num_hands=2)
     mp_draw = mp.solutions.drawing_utils
 else:
     _download_model_if_needed(MODEL_PATH)
     base_options = mp.tasks.BaseOptions(model_asset_path=MODEL_PATH)
     options = mp.tasks.vision.HandLandmarkerOptions(
         base_options=base_options,
-        num_hands=1,
+        num_hands=2,
         running_mode=mp.tasks.vision.RunningMode.IMAGE,
     )
     hands = mp.tasks.vision.HandLandmarker.create_from_options(options)
 
+p_time = 0
 prev_x, prev_y = 0, 0
 canvas = None
-p_time = 0
 
 while True:
     success, img = cap.read()
@@ -157,68 +177,90 @@ while True:
         canvas = np.zeros_like(img)
 
     img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    drawing_active = False
+    detected_hands = 0
 
     if use_legacy_solutions:
         results = hands.process(img_rgb)
 
         if results.multi_hand_landmarks:
-            hand_lms = results.multi_hand_landmarks[0]
-            mp_draw.draw_landmarks(img, hand_lms, mphands.HAND_CONNECTIONS)
+            detected_hands = len(results.multi_hand_landmarks)
 
-            thumb_tip = hand_lms.landmark[4]
-            index_tip = hand_lms.landmark[8]
+            for hand_index, hand_lms in enumerate(results.multi_hand_landmarks):
+                # poora hand map draw hoga
+                mp_draw.draw_landmarks(img, hand_lms, mphands.HAND_CONNECTIONS)
 
-            thumb_x, thumb_y = int(thumb_tip.x * w), int(thumb_tip.y * h)
-            index_x, index_y = int(index_tip.x * w), int(index_tip.y * h)
+                for idx, lm in enumerate(hand_lms.landmark):
+                    cx, cy = int(lm.x * w), int(lm.y * h)
+                    print(idx, cx, cy)
 
-            distance = ((index_x - thumb_x) ** 2 + (index_y - thumb_y) ** 2) ** 0.5
+                # sirf first hand se drawing hogi
+                if hand_index == 0:
+                    thumb_tip = hand_lms.landmark[4]
+                    index_tip = hand_lms.landmark[8]
 
-            cv2.circle(img, (index_x, index_y), 10, (0, 255, 255), cv2.FILLED)
-            cv2.line(img, (thumb_x, thumb_y), (index_x, index_y), (0, 255, 255), 2)
+                    thumb_x, thumb_y = int(thumb_tip.x * w), int(thumb_tip.y * h)
+                    index_x, index_y = int(index_tip.x * w), int(index_tip.y * h)
 
-            if distance < 40:
-                if prev_x == 0 and prev_y == 0:
-                    prev_x, prev_y = index_x, index_y
+                    distance = ((index_x - thumb_x) ** 2 + (index_y - thumb_y) ** 2) ** 0.5
 
-                cv2.line(canvas, (prev_x, prev_y), (index_x, index_y), (255, 0, 0), 5)
-                prev_x, prev_y = index_x, index_y
-                cv2.putText(img, "DRAW", (10, 110), cv2.FONT_HERSHEY_PLAIN, 2, (0, 255, 0), 2)
-            else:
-                prev_x, prev_y = 0, 0
-                cv2.putText(img, "MOVE", (10, 110), cv2.FONT_HERSHEY_PLAIN, 2, (0, 255, 255), 2)
+                    cv2.circle(img, (index_x, index_y), 10, (0, 255, 255), cv2.FILLED)
+                    cv2.line(img, (thumb_x, thumb_y), (index_x, index_y), (0, 255, 255), 2)
+
+                    if distance < 40:
+                        drawing_active = True
+                        if prev_x == 0 and prev_y == 0:
+                            prev_x, prev_y = index_x, index_y
+
+                        cv2.line(canvas, (prev_x, prev_y), (index_x, index_y), (255, 0, 0), 5)
+                        prev_x, prev_y = index_x, index_y
+                        cv2.putText(img, "DRAW", (10, 110), cv2.FONT_HERSHEY_PLAIN, 2, (0, 255, 0), 2)
+                    else:
+                        cv2.putText(img, "MOVE", (10, 110), cv2.FONT_HERSHEY_PLAIN, 2, (0, 255, 255), 2)
+
+        if not drawing_active:
+            prev_x, prev_y = 0, 0
 
     else:
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=img_rgb)
         results = hands.detect(mp_image)
 
         if results.hand_landmarks:
-            hand_landmarks = results.hand_landmarks[0]
+            detected_hands = len(results.hand_landmarks)
 
-            thumb_tip = hand_landmarks[4]
-            index_tip = hand_landmarks[8]
+            for hand_index, hand_landmarks in enumerate(results.hand_landmarks):
+                # poora hand map draw hoga
+                _draw_task_landmarks(img, hand_landmarks)
 
-            thumb_x, thumb_y = int(thumb_tip.x * w), int(thumb_tip.y * h)
-            index_x, index_y = int(index_tip.x * w), int(index_tip.y * h)
+                for idx, lm in enumerate(hand_landmarks):
+                    print(idx, int(lm.x * w), int(lm.y * h))
 
-            distance = ((index_x - thumb_x) ** 2 + (index_y - thumb_y) ** 2) ** 0.5
+                # sirf first hand se drawing hogi
+                if hand_index == 0:
+                    thumb_tip = hand_landmarks[4]
+                    index_tip = hand_landmarks[8]
 
-            for lm in hand_landmarks:
-                cx, cy = int(lm.x * w), int(lm.y * h)
-                cv2.circle(img, (cx, cy), 4, (0, 255, 0), cv2.FILLED)
+                    thumb_x, thumb_y = int(thumb_tip.x * w), int(thumb_tip.y * h)
+                    index_x, index_y = int(index_tip.x * w), int(index_tip.y * h)
 
-            cv2.circle(img, (index_x, index_y), 10, (0, 255, 255), cv2.FILLED)
-            cv2.line(img, (thumb_x, thumb_y), (index_x, index_y), (0, 255, 255), 2)
+                    distance = ((index_x - thumb_x) ** 2 + (index_y - thumb_y) ** 2) ** 0.5
 
-            if distance < 40:
-                if prev_x == 0 and prev_y == 0:
-                    prev_x, prev_y = index_x, index_y
+                    cv2.circle(img, (index_x, index_y), 10, (0, 255, 255), cv2.FILLED)
+                    cv2.line(img, (thumb_x, thumb_y), (index_x, index_y), (0, 255, 255), 2)
 
-                cv2.line(canvas, (prev_x, prev_y), (index_x, index_y), (255, 0, 0), 5)
-                prev_x, prev_y = index_x, index_y
-                cv2.putText(img, "DRAW", (10, 110), cv2.FONT_HERSHEY_PLAIN, 2, (0, 255, 0), 2)
-            else:
-                prev_x, prev_y = 0, 0
-                cv2.putText(img, "MOVE", (10, 110), cv2.FONT_HERSHEY_PLAIN, 2, (0, 255, 255), 2)
+                    if distance < 40:
+                        drawing_active = True
+                        if prev_x == 0 and prev_y == 0:
+                            prev_x, prev_y = index_x, index_y
+
+                        cv2.line(canvas, (prev_x, prev_y), (index_x, index_y), (255, 0, 0), 5)
+                        prev_x, prev_y = index_x, index_y
+                        cv2.putText(img, "DRAW", (10, 110), cv2.FONT_HERSHEY_PLAIN, 2, (0, 255, 0), 2)
+                    else:
+                        cv2.putText(img, "MOVE", (10, 110), cv2.FONT_HERSHEY_PLAIN, 2, (0, 255, 255), 2)
+
+        if not drawing_active:
+            prev_x, prev_y = 0, 0
 
     img = cv2.addWeighted(img, 1, canvas, 1, 0)
 
@@ -226,10 +268,11 @@ while True:
     fps = 1 / (c_time - p_time) if c_time != p_time else 0
     p_time = c_time
 
-    cv2.putText(img, f"FPS: {int(fps)}", (10, 40), cv2.FONT_HERSHEY_PLAIN, 2, (255, 0, 255), 2)
-    cv2.putText(img, "C = clear | Q = quit", (10, 75), cv2.FONT_HERSHEY_PLAIN, 2, (255, 255, 255), 2)
+    cv2.putText(img, f"Hands: {detected_hands}", (10, 40), cv2.FONT_HERSHEY_PLAIN, 2, (255, 255, 255), 2)
+    cv2.putText(img, f"FPS: {int(fps)}", (10, 75), cv2.FONT_HERSHEY_PLAIN, 2, (255, 0, 255), 2)
+    cv2.putText(img, "C = clear | Q = quit", (10, 145), cv2.FONT_HERSHEY_PLAIN, 2, (255, 255, 255), 2)
 
-    cv2.imshow("Air Draw", img)
+    cv2.imshow("Image", img)
 
     key = cv2.waitKey(1) & 0xFF
     if key == ord("c"):
