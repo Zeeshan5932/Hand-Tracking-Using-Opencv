@@ -144,12 +144,28 @@ def _draw_task_landmarks(img, hand_landmarks):
     cv2.circle(img, (int(root.x * w), int(root.y * h)), 10, (255, 0, 255), cv2.FILLED)
 
 
+def _distance_pixels(point_a, point_b, frame_width, frame_height):
+    x1, y1 = int(point_a.x * frame_width), int(point_a.y * frame_height)
+    x2, y2 = int(point_b.x * frame_width), int(point_b.y * frame_height)
+    return ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5, (x1, y1), (x2, y2)
+
+
 cap = cv2.VideoCapture(0)
+
+# camera size better kar do
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+
 use_legacy_solutions = hasattr(mp, "solutions") and hasattr(mp.solutions, "hands")
 
 if use_legacy_solutions:
     mphands = mp.solutions.hands
-    hands = mphands.Hands(False, max_num_hands=2)
+    hands = mphands.Hands(
+        static_image_mode=False,
+        max_num_hands=2,
+        min_detection_confidence=0.6,
+        min_tracking_confidence=0.6,
+    )
     mp_draw = mp.solutions.drawing_utils
 else:
     _download_model_if_needed(MODEL_PATH)
@@ -161,9 +177,18 @@ else:
     )
     hands = mp.tasks.vision.HandLandmarker.create_from_options(options)
 
+window_name = "Image"
+cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+cv2.resizeWindow(window_name, 1280, 720)
+
 p_time = 0
 prev_x, prev_y = 0, 0
 canvas = None
+fullscreen = False
+
+draw_color = (255, 0, 0)
+brush_thickness = 6
+eraser_radius = 35
 
 while True:
     success, img = cap.read()
@@ -174,11 +199,12 @@ while True:
     h, w, _ = img.shape
 
     if canvas is None:
-        canvas = np.zeros_like(img)
+        canvas = np.zeros((h, w, 3), dtype=np.uint8)
 
     img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    drawing_active = False
     detected_hands = 0
+    mode_text = "MOVE"
+    drawing_active = False
 
     if use_legacy_solutions:
         results = hands.process(img_rgb)
@@ -187,39 +213,50 @@ while True:
             detected_hands = len(results.multi_hand_landmarks)
 
             for hand_index, hand_lms in enumerate(results.multi_hand_landmarks):
-                # poora hand map draw hoga
+                # complete hand map
                 mp_draw.draw_landmarks(img, hand_lms, mphands.HAND_CONNECTIONS)
 
-                for idx, lm in enumerate(hand_lms.landmark):
-                    cx, cy = int(lm.x * w), int(lm.y * h)
-                    print(idx, cx, cy)
-
-                # sirf first hand se drawing hogi
+                # sirf first hand se draw/erase
                 if hand_index == 0:
                     thumb_tip = hand_lms.landmark[4]
                     index_tip = hand_lms.landmark[8]
+                    middle_tip = hand_lms.landmark[12]
 
-                    thumb_x, thumb_y = int(thumb_tip.x * w), int(thumb_tip.y * h)
-                    index_x, index_y = int(index_tip.x * w), int(index_tip.y * h)
+                    thumb_index_dist, thumb_xy, index_xy = _distance_pixels(thumb_tip, index_tip, w, h)
+                    index_middle_dist, _, middle_xy = _distance_pixels(index_tip, middle_tip, w, h)
 
-                    distance = ((index_x - thumb_x) ** 2 + (index_y - thumb_y) ** 2) ** 0.5
+                    ix, iy = index_xy
+                    mx, my = middle_xy
 
-                    cv2.circle(img, (index_x, index_y), 10, (0, 255, 255), cv2.FILLED)
-                    cv2.line(img, (thumb_x, thumb_y), (index_x, index_y), (0, 255, 255), 2)
+                    cv2.circle(img, (ix, iy), 10, (0, 255, 255), cv2.FILLED)
+                    cv2.circle(img, (mx, my), 10, (0, 200, 255), cv2.FILLED)
 
-                    if distance < 40:
+                    # erase mode: index + middle close
+                    if index_middle_dist < 35:
+                        mode_text = "ERASE"
+                        cv2.circle(img, (ix, iy), eraser_radius, (0, 0, 255), 2)
+                        cv2.circle(canvas, (ix, iy), eraser_radius, (0, 0, 0), -1)
+                        prev_x, prev_y = 0, 0
+
+                    # draw mode: thumb + index close
+                    elif thumb_index_dist < 40:
+                        mode_text = "DRAW"
                         drawing_active = True
+                        cv2.line(img, thumb_xy, index_xy, (0, 255, 255), 2)
+
+                        # smooth drawing
                         if prev_x == 0 and prev_y == 0:
-                            prev_x, prev_y = index_x, index_y
+                            prev_x, prev_y = ix, iy
 
-                        cv2.line(canvas, (prev_x, prev_y), (index_x, index_y), (255, 0, 0), 5)
-                        prev_x, prev_y = index_x, index_y
-                        cv2.putText(img, "DRAW", (10, 110), cv2.FONT_HERSHEY_PLAIN, 2, (0, 255, 0), 2)
+                        smooth_x = int((prev_x + ix) / 2)
+                        smooth_y = int((prev_y + iy) / 2)
+
+                        cv2.line(canvas, (prev_x, prev_y), (smooth_x, smooth_y), draw_color, brush_thickness)
+                        prev_x, prev_y = smooth_x, smooth_y
+
                     else:
-                        cv2.putText(img, "MOVE", (10, 110), cv2.FONT_HERSHEY_PLAIN, 2, (0, 255, 255), 2)
-
-        if not drawing_active:
-            prev_x, prev_y = 0, 0
+                        mode_text = "MOVE"
+                        prev_x, prev_y = 0, 0
 
     else:
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=img_rgb)
@@ -229,54 +266,77 @@ while True:
             detected_hands = len(results.hand_landmarks)
 
             for hand_index, hand_landmarks in enumerate(results.hand_landmarks):
-                # poora hand map draw hoga
                 _draw_task_landmarks(img, hand_landmarks)
 
-                for idx, lm in enumerate(hand_landmarks):
-                    print(idx, int(lm.x * w), int(lm.y * h))
-
-                # sirf first hand se drawing hogi
                 if hand_index == 0:
                     thumb_tip = hand_landmarks[4]
                     index_tip = hand_landmarks[8]
+                    middle_tip = hand_landmarks[12]
 
-                    thumb_x, thumb_y = int(thumb_tip.x * w), int(thumb_tip.y * h)
-                    index_x, index_y = int(index_tip.x * w), int(index_tip.y * h)
+                    thumb_index_dist, thumb_xy, index_xy = _distance_pixels(thumb_tip, index_tip, w, h)
+                    index_middle_dist, _, middle_xy = _distance_pixels(index_tip, middle_tip, w, h)
 
-                    distance = ((index_x - thumb_x) ** 2 + (index_y - thumb_y) ** 2) ** 0.5
+                    ix, iy = index_xy
+                    mx, my = middle_xy
 
-                    cv2.circle(img, (index_x, index_y), 10, (0, 255, 255), cv2.FILLED)
-                    cv2.line(img, (thumb_x, thumb_y), (index_x, index_y), (0, 255, 255), 2)
+                    cv2.circle(img, (ix, iy), 10, (0, 255, 255), cv2.FILLED)
+                    cv2.circle(img, (mx, my), 10, (0, 200, 255), cv2.FILLED)
 
-                    if distance < 40:
+                    if index_middle_dist < 35:
+                        mode_text = "ERASE"
+                        cv2.circle(img, (ix, iy), eraser_radius, (0, 0, 255), 2)
+                        cv2.circle(canvas, (ix, iy), eraser_radius, (0, 0, 0), -1)
+                        prev_x, prev_y = 0, 0
+
+                    elif thumb_index_dist < 40:
+                        mode_text = "DRAW"
                         drawing_active = True
+                        cv2.line(img, thumb_xy, index_xy, (0, 255, 255), 2)
+
                         if prev_x == 0 and prev_y == 0:
-                            prev_x, prev_y = index_x, index_y
+                            prev_x, prev_y = ix, iy
 
-                        cv2.line(canvas, (prev_x, prev_y), (index_x, index_y), (255, 0, 0), 5)
-                        prev_x, prev_y = index_x, index_y
-                        cv2.putText(img, "DRAW", (10, 110), cv2.FONT_HERSHEY_PLAIN, 2, (0, 255, 0), 2)
+                        smooth_x = int((prev_x + ix) / 2)
+                        smooth_y = int((prev_y + iy) / 2)
+
+                        cv2.line(canvas, (prev_x, prev_y), (smooth_x, smooth_y), draw_color, brush_thickness)
+                        prev_x, prev_y = smooth_x, smooth_y
+
                     else:
-                        cv2.putText(img, "MOVE", (10, 110), cv2.FONT_HERSHEY_PLAIN, 2, (0, 255, 255), 2)
+                        mode_text = "MOVE"
+                        prev_x, prev_y = 0, 0
 
-        if not drawing_active:
-            prev_x, prev_y = 0, 0
-
-    img = cv2.addWeighted(img, 1, canvas, 1, 0)
+    # drawing ko clearly show karne ke liye
+    overlay = cv2.addWeighted(img, 1.0, canvas, 1.0, 0)
 
     c_time = time.time()
     fps = 1 / (c_time - p_time) if c_time != p_time else 0
     p_time = c_time
 
-    cv2.putText(img, f"Hands: {detected_hands}", (10, 40), cv2.FONT_HERSHEY_PLAIN, 2, (255, 255, 255), 2)
-    cv2.putText(img, f"FPS: {int(fps)}", (10, 75), cv2.FONT_HERSHEY_PLAIN, 2, (255, 0, 255), 2)
-    cv2.putText(img, "C = clear | Q = quit", (10, 145), cv2.FONT_HERSHEY_PLAIN, 2, (255, 255, 255), 2)
+    cv2.putText(overlay, f"Hands: {detected_hands}", (15, 40), cv2.FONT_HERSHEY_PLAIN, 2, (255, 255, 255), 2)
+    cv2.putText(overlay, f"FPS: {int(fps)}", (15, 75), cv2.FONT_HERSHEY_PLAIN, 3, (255, 0, 255), 3)
+    cv2.putText(overlay, f"Mode: {mode_text}", (15, 110), cv2.FONT_HERSHEY_PLAIN, 2, (0, 255, 255), 2)
+    cv2.putText(overlay, "Draw: Thumb+Index", (15, 145), cv2.FONT_HERSHEY_PLAIN, 2, (255, 255, 255), 2)
+    cv2.putText(overlay, "Erase: Index+Middle", (15, 180), cv2.FONT_HERSHEY_PLAIN, 2, (255, 255, 255), 2)
+    cv2.putText(overlay, "C=clear | F=fullscreen | Q=quit", (15, 215), cv2.FONT_HERSHEY_PLAIN, 2, (255, 255, 255), 2)
 
-    cv2.imshow("Image", img)
+    # preview ko bada karke show karo
+    display_img = cv2.resize(overlay, (1280, 720))
+    cv2.imshow(window_name, display_img)
 
     key = cv2.waitKey(1) & 0xFF
+
     if key == ord("c"):
-        canvas = np.zeros_like(img)
+        canvas = np.zeros((h, w, 3), dtype=np.uint8)
+
+    elif key == ord("f"):
+        fullscreen = not fullscreen
+        if fullscreen:
+            cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+        else:
+            cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_NORMAL)
+            cv2.resizeWindow(window_name, 1280, 720)
+
     elif key == ord("q"):
         break
 
