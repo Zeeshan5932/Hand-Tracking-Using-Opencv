@@ -86,7 +86,7 @@ height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
 # Define the codec and create VideoWriter object
 fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-output_video_path = "output_video.mp4"
+output_video_path = "sample.mp4"
 out = cv2.VideoWriter(output_video_path, fourcc, fps, (width, height))
 
 use_legacy_solutions = hasattr(mp, "solutions") and hasattr(mp.solutions, "hands")
